@@ -1,116 +1,84 @@
 # objects-mapper — FRC driver-station field mapper
 
-A fixed USB camera at the driver station looks across the field. This app works out exactly where that camera is from the field AprilTags, detects game pieces with YOLO, projects them onto the floor, and publishes their field X/Y to the robot over NetworkTables.
+A fixed USB camera at the driver station looks across the field. Field Mapper:
+1. works out exactly where the camera is from the field AprilTags;
+2. finds game pieces with YOLO;
+3. puts them on the field map;
+4. sends their X/Y positions to the robot over NetworkTables.
+
+You run and set it up entirely from a web page in your browser.
 
 ```
-USB camera ──► capture ──┬──► AprilTags (every 6 s) ──► solvePnP ──► pose filter ──► camera pose
-                         │                                                              │
-                         └──► YOLO (every frame) ──► box bottom-centre ──► undistort ──►┴► ray ∩ floor (z=0)
-                                                                                              │
-                              NetworkTables /FieldMapper ◄── tracker ◄── field-bounds filter ◄┘
+USB camera ──► AprilTags (every 6 s) ──► camera pose ─┐
+           └─► YOLO (every frame) ──► box bottom ─────┴─► ray ∩ floor ──► tracker ──► NetworkTables /FieldMapper
+                                                                                  └─► browser dashboard
 ```
 
-Stack: Python 3.11, OpenCV, robotpy-apriltag (bundled WPILib 2026 *REBUILT* layouts), Ultralytics YOLO on CUDA, pyntcore.
+## Quick start
 
----
+**Windows:** double-click **`start.bat`**.
+**Linux / macOS:** run `./start.sh`.
 
-## Install
+- **The first time** it sets everything up, which takes 5–10 minutes and needs internet. Do this before the event.
+  - If Python 3.11 is missing on Windows, it offers to install it.
+  - It installs the GPU (CUDA) build of PyTorch that matches your NVIDIA driver, or a CPU build if there is no NVIDIA GPU.
+  - It installs everything else.
+- **Every time** your browser opens the dashboard at **http://localhost:5805**. The **Finish setup** checklist walks you through what's left:
+  1. **Team number**, so the app can find your robot.
+  2. **Camera**: *Settings → Find cameras* shows a preview of each connected camera. Click yours.
+  3. **Calibrate**: print the checkerboard from the Calibrate tab and capture about 15 views. Takes about 3 minutes, once per camera.
+  4. **Detection model**: upload your trained YOLO `.pt` file in *Settings*.
+  5. **Aim the camera** so at least two AprilTags are visible.
 
-Use Python 3.11 in a virtual environment.
+After that, just double-click `start.bat`: it starts in seconds and works offline. Closing the console window stops it. Double-clicking again while it's running just reopens the page.
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate          # Windows  (Linux/macOS: source .venv/bin/activate)
+## The dashboard
 
-# 1. PyTorch with CUDA (RTX 4050). Get the exact command from https://pytorch.org/get-started/locally/
-#    for your CUDA version. Example:
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+**Status chips** (top right) show at a glance whether the camera, calibration, model, camera pose and robot connection are OK. Click a red one to go where it's fixed.
 
-# 2. Everything else
-pip install -r requirements-dev.txt
-```
+**Live**
+- **Camera:** the camera image with overlays.
+  - Detected tags are green when used for the pose.
+  - Yellow outlines and the grey field edge show where the tags and field *should* be. If they line up with the real ones, the pose is good.
+  - Each detection is labelled with its field position.
+- **Field:** a top-down map showing the tags, the camera and what it can see, and the tracked pieces with IDs. Hover for coordinates. *View from red* flips it.
+- **Game pieces:** the same list the robot receives.
+- **Camera pose:** position, angles, and the result of the last check. *Re-localise now* forces a new check.
+- **Controls:**
+  - detection confidence slider (applies instantly);
+  - *Reset tracker*;
+  - **● Record**, which saves the raw camera feed to `recordings/`;
+  - frame rate and timing.
+- **Log:** what the app is doing, including why a pose check was rejected.
 
-Check that CUDA works: `python -c "import torch; print(torch.cuda.is_available())"`. If it doesn't, the mapper still runs, on CPU, and logs a warning.
+**Calibrate:** step by step.
+- *Open printable board* gives a page to print at 100%.
+- Enter the board size and press *Start*.
+- Move the board around, covering the whole image, and press *Capture* (or Space), or turn on *Auto-capture*.
+- Press *Calibrate & save*. You get an error figure and a plain-language quality rating.
 
-`opencv-python` (not `-headless`) is required for the debug windows. Don't install both builds at once.
+**Settings:** team number, NetworkTables server (for simulation), video source (camera or a recording), resolution, field layout (*Welded* or *AndyMark*: check your event), YOLO model and upload, confidence, GPU/CPU, how often to re-check the pose, and whether other devices on the network may open the dashboard. Settings are saved to `settings.yaml` and applied immediately.
 
-## 1. Calibrate the camera
+### Recording and replaying matches
 
-Camera intrinsics and distortion go in `calib.yaml`. **Calibrate at the resolution you will run at, with autofocus off.** Calibration is only valid for that focus setting.
+1. Press **● Record** during a match.
+2. Later, choose *Settings → Video source → Recording* and pick the file.
 
-1. Print a checkerboard and glue it to something flat. The default is **9×6 inner corners** (10×7 squares) with 25 mm squares. Set `calibration:` in `config.yaml` or pass `--cols/--rows/--square`. Measure the printed square size.
-2. Run:
-
-   ```bash
-   python calibrate.py
-   ```
-
-   | key | action |
-   |---|---|
-   | `SPACE` | capture the current view |
-   | `a` | toggle auto-capture (grabs a view when the board is still and in a new position) |
-   | `u` | undo last capture |
-   | `c` | calibrate and save (needs `min_frames`, default 15) |
-   | `q` / `Esc` | quit without saving |
-
-   Cover the **whole image**, corners and edges especially, at different distances and tilts. The green dots show coverage so far.
-3. Check the printed RMS error. Under ~0.5 px is good; over 1 px means something is wrong (motion blur, a warped board, or the wrong board size).
-
-Offline alternatives: `python calibrate.py --images "calib_images/*.png"` or `--video calib.mp4 --every 10`. Use `--save-dir calib_images` in live mode to keep the captured frames. For very wide lenses, add `--rational`.
-
-If you change capture resolution later with the same aspect ratio, the intrinsics are scaled automatically, with a warning. Recalibrating is better.
-
-## 2. Configure
-
-Edit `config.yaml`. Every key has a default (`field_mapper/config.py`), and unknown keys are rejected so typos don't go unnoticed. The ones you must set:
-
-| key | what |
-|---|---|
-| `team_number` | used to find the robot (plus the Driver Station, if it's running on this laptop) |
-| `camera.index`, `width`, `height` | which USB camera and its mode |
-| `field.layout` | `k2026RebuiltWelded` or `k2026RebuiltAndyMark`. **Check which field your event uses.** Can also be a path to a WPILib layout JSON |
-| `detector.model_path` | your trained YOLO `.pt` file |
-| `detector.classes` | class names or ids to keep (empty = all) |
-
-Useful extras: `projection.ground_offset_m` (set it to the game piece radius to report piece centres instead of near edges), `networktables.server: "127.0.0.1"` for simulation, `camera.properties` to lock focus and exposure.
-
-## 3. Run
-
-```bash
-python main.py                         # live camera, debug windows per config
-python main.py --headless              # no windows (competition)
-python main.py --replay match.mp4      # run on a recording at real-time speed
-python main.py --replay match.mp4 --speed 0 --loop --no-nt
-```
-
-| flag | |
-|---|---|
-| `--config PATH` | config file (default `config.yaml`) |
-| `--replay VIDEO` | read a video file instead of the camera. Time-based behaviour (re-localising every 6 s) follows the video clock |
-| `--speed X` | replay speed, `1` = real time, `0` = as fast as possible |
-| `--loop` | loop the replay |
-| `--no-nt` | don't publish to NetworkTables |
-| `--debug` / `--headless` | force the debug windows on/off |
-| `--calib`, `--model` | override the calibration / model paths |
-| `-v` | debug logging |
-
-**Debug windows.** *Camera*: detected tags are green when used in the last accepted solve and orange otherwise. Yellow outlines and the grey perimeter show where the layout says the tags and field edges should appear given the current pose; if they line up with the real ones, the pose is good. Detections are labelled with their field coordinates (green: on field, orange: off field, red: no pose). *Field*: top-down view with the tags, the camera and its floor footprint, raw projections (grey dots) and tracked pieces with IDs (a hollow circle means not seen this frame).
-
-Keys: `q`/`Esc` quit, `r` re-localise now, `SPACE` pause (replay).
+The whole pipeline runs on it exactly as it did live, so you can tune confidence, offsets and tracking at home without a field. *Pause* and *Restart* appear under the camera view.
 
 ## NetworkTables output
 
-Table `/FieldMapper`, published every processed frame:
+Table `/FieldMapper`, published every frame:
 
 | topic | type | meaning |
 |---|---|---|
 | `x` | `double[]` | field X of each tracked piece, metres |
 | `y` | `double[]` | field Y of each tracked piece, metres (same order as `x`) |
-| `timestamp` | `double` | frame capture time, seconds, **on the NT server clock**, so on the robot it is directly comparable with `Timer.getFPGATimestamp()` |
+| `timestamp` | `double` | frame capture time in seconds **on the NT server clock**, so on the robot it is directly comparable with `Timer.getFPGATimestamp()` |
 | `cameraPose` | `double[6]` | camera `x, y, z` (m), `roll, pitch, yaw` (rad) |
 | `poseValid` | `boolean` | `x`/`y` are only meaningful when true |
 
-Coordinates use the WPILib field frame with the **blue-alliance origin**, as robot code expects: +X from the blue wall towards red, +Y to the left as seen from the blue driver station, +Z up. Set `field.origin: red` if you want red-origin coordinates. `cameraPose` angles follow WPILib `Rotation3d(roll, pitch, yaw)` for the camera body (X out of the lens, Y left, Z up), so positive pitch means tilted down. Pass them straight to `new Pose3d(x, y, z, new Rotation3d(roll, pitch, yaw))`.
+Coordinates use the WPILib field frame with the **blue-alliance origin**: +X from the blue wall towards red, +Y to the left as seen from the blue driver station, +Z up. Set *Coordinate origin* to red if you want red-origin coordinates. `cameraPose` angles follow `Rotation3d(roll, pitch, yaw)` for the camera body (X out of the lens, Y left, Z up), so positive pitch means tilted down.
 
 Robot-side example (Java):
 
@@ -134,78 +102,111 @@ if (validSub.get() && xs.length == ys.length) {   // x and y arrive as separate 
 ## How it works
 
 **Localisation** (`field_mapper/localizer.py`)
-- Every visible 36h11 tag's 4 corners go into **one** solvePnP against their 3D field positions from the layout (SQPnP, then Levenberg–Marquardt refinement).
-- A single tag uses IPPE. It gives the two classic planar solutions: any solution that puts the camera under the floor is dropped, then the one nearest the currently held pose wins. If there is no held pose and the two are too similar (`max_single_tag_ambiguity`), the solve is refused.
-- Re-solves every `interval_s` (6 s). With no pose yet, or while confirming a possible camera move, it retries every `retry_interval_s` instead.
-- A new solve is **rejected** if its RMS reprojection error is above `max_reprojection_error_px`, or if it is more than `max_jump_m` / `max_jump_deg` from the held pose. Accepted solves are **blended** in (`smoothing_alpha`; slerp for rotation) rather than snapped.
-- If the camera really was bumped, `jump_confirmations` consecutive solves that agree with *each other* re-anchor the pose. Inconsistent outliers never do. Set `jump_confirmations: 0` to disable.
-- `max_pose_age_s` can invalidate a pose that hasn't been re-confirmed for a while (off by default, since robots often block the tags).
+- The corners of every visible 36h11 tag go into **one** solvePnP against their 3D positions from the WPILib layout (SQPnP, then Levenberg–Marquardt refinement).
+- A single tag uses IPPE: solutions that put the camera under the floor are dropped, then the one nearest the held pose wins. Ambiguous first solves are refused.
+- Re-checks run every 6 s. With no pose yet, or while confirming a possible camera move, it retries every 0.5 s.
+- A new solve is rejected if its reprojection error is high or it jumps too far from the held pose. Accepted solves are blended in (slerp), not snapped.
+- If the camera really was bumped, three consecutive solves that agree with *each other* re-anchor the pose.
 
 **Projection** (`field_mapper/geometry.py`)
 1. Take the bottom-centre pixel of each detection box.
-2. Undistort it to normalised camera coordinates (iterating to convergence).
-3. Rotate the ray into the field frame and intersect it with z = `floor_z_m`.
-4. Rays at or above the horizon are discarded, as are points outside the field (± `bounds_margin_m`).
+2. Undistort it.
+3. Cast a ray from the camera pose and intersect it with the floor (z = 0).
+4. Drop points that fall outside the field.
 
-**Tracking** (`field_mapper/tracker.py`): greedy nearest-neighbour in field metres, per class, with a gate of `max_match_distance_m`.
-- A piece must be seen `min_hits` times before it is published.
-- It stays published, at its last position, for up to `max_missed_frames` frames without a match, so it doesn't flicker.
-- Positions are exponentially smoothed.
+**Tracking** (`field_mapper/tracker.py`): greedy nearest-neighbour in field metres, per class.
+- A piece must be seen 3 times before it is published.
+- It stays published for up to 10 missed frames, so it doesn't flicker.
+
+**App** (`field_mapper/service.py`, `field_mapper/web/`)
+- The pipeline runs on a background thread.
+- The FastAPI server streams the annotated camera image (MJPEG) and pushes state to the page 10× per second (server-sent events).
+- No internet or CDN is needed.
+- The app starts in any state (no camera, calibration or model yet) and picks things up as soon as they're fixed.
 
 ## Accuracy: what to expect
 
-This camera views the floor at a very shallow angle, and that dominates everything. For a camera at height *h*, a piece at ground distance *d* and focal length *f* (pixels):
+The camera views the floor at a very shallow angle, and that dominates everything. For camera height *h*, ground distance *d* and focal length *f* (pixels):
 
 - **range error ≈ (h² + d²) / (h·f)** metres per pixel of error at the box's bottom edge
 - **sideways error ≈ d / f** metres per pixel
 
-| camera height | resolution (70° HFOV) | range error per px at 5 m / 10 m / 15 m |
+| camera height | resolution (70° lens) | range error per px at 5 / 10 / 15 m |
 |---|---|---|
-| 2.0 m | 1280×720 (f≈914) | 1.6 / 5.7 / 12.5 cm |
-| 2.0 m | 1920×1080 (f≈1371) | 1.0 / 3.8 / 8.4 cm |
+| 2.0 m | 1280×720 | 1.6 / 5.7 / 12.5 cm |
+| 2.0 m | 1920×1080 | 1.0 / 3.8 / 8.4 cm |
 | 1.5 m | 1920×1080 | 1.3 / 5.0 / 11.0 cm |
 
-Practical consequences:
 - **Mount the camera as high as you're allowed, and use 1080p or more.**
-- **Camera pitch accuracy matters most.** 0.1° of pitch error is about 9 cm of range error at 10 m (h = 2 m). Multi-tag solves with tags spread across the image are far better than one tag, which is why `min_tags` defaults to 2. In synthetic tests, a single tag 4.6 m away (~33 px) with 0.3 px corner noise gave 0.3–0.7 m position error.
-- **Tags must be big enough to decode.** A 6.5 in tag is f·0.165/d pixels wide: at 720p that's ~30 px at 5 m and ~9 px across the full field. Keep `quad_decimate: 1` and `min_cluster_pixels` low. WPILib's default of 300 silently drops every tag smaller than ~75 px, which is all of them from the driver station.
-- Pieces **not on the floor** (in a robot, on a ledge, stacked) project to the wrong place, along the line of sight beyond their true position. Pieces hidden behind robots aren't seen at all.
-- The box bottom is the piece's near edge. `projection.ground_offset_m` (≈ piece radius) shifts it to the centre.
+- **Camera pitch matters most.** 0.1° of pitch error is about 9 cm at 10 m. Two or more tags per solve are far better than one, which is why *Tags needed per solve* defaults to 2.
+- **Tags need enough pixels.** A 6.5 in tag is f·0.165/d px wide: at 720p that's ~30 px at 5 m and ~9 px across the full field.
+- **Pieces off the floor project to the wrong place.** That includes pieces held by a robot, on a ledge or stacked: they land further away along the line of sight. Hidden pieces aren't seen.
+- **The box bottom is the piece's near edge.** Set *Ground offset* to about the piece radius to report centres instead.
+
+## Troubleshooting
+
+| problem | fix |
+|---|---|
+| Browser didn't open | Go to http://localhost:5805 |
+| Chip says **Model · CPU** | GPU PyTorch isn't working. Update the NVIDIA driver, then run `start.bat --reinstall` |
+| **Camera problem** | *Settings → Find cameras*. Close other apps using the camera, or try another USB port |
+| **Robot not connected** | Check the team number. The Driver Station must be running on this laptop, or set the NetworkTables server. For simulation use `127.0.0.1` |
+| **Recalibrate** chip | The resolution changed to a different shape since calibrating. Calibrate again |
+| Positions are off | Check that the yellow tag outlines line up in the camera view, the layout (*Welded* vs *AndyMark*) is right, and the ground offset is set |
+| Port 5805 in use | Change `web.port` in `config.yaml` |
+
+## Advanced
+
+- `config.yaml` holds every setting with comments. The dashboard saves its changes to `settings.yaml`, which overrides it. Delete `settings.yaml` to go back to the defaults.
+- Command line (inside the `.venv`): `python main.py`, with these options:
+  - `--headless`: no dashboard, just run and publish;
+  - `--replay video.mp4 [--loop] [--speed 0]`;
+  - `--no-nt`;
+  - `--port`, `--host`;
+  - `--no-browser`.
+- `python calibrate.py` calibrates from a terminal, either live or with `--images "dir/*.png"` / `--video file`.
+- `start.bat --reinstall` redoes the dependency setup.
 
 ## Tests
 
 ```bash
+pip install -r requirements-dev.txt
 pytest
 ```
 
-- `tests/test_projection.py` covers the floor projection maths:
-  - round trips through OpenCV's forward model, with and without lens distortion and with camera roll;
-  - analytic cases (principal ray at h/tan(pitch), straight-down camera);
-  - rejection above the horizon, non-zero floor planes, ground offset, field bounds;
-  - the solvePnP pose conventions and the published roll/pitch/yaw.
-- `tests/test_localizer.py`:
-  - multi-tag and single-tag PnP against the real 2026 layout;
-  - the pose filter (blend, reject, re-anchor, expiry);
-  - an end-to-end test that renders the field tags, detects them with robotpy-apriltag and recovers the camera pose.
-- `tests/test_tracker.py` covers the tracker.
+- **Floor projection maths** (`tests/test_projection.py`):
+  - round trips with and without lens distortion;
+  - analytic cases;
+  - horizon and field-bounds handling;
+  - the pose conventions.
+- **Localisation** against the real 2026 layout, including real AprilTag detection on rendered images.
+- **Tracker.**
+- **Browser calibration** on rendered, distorted checkerboards.
+- **Config overrides.**
+- **The web app end to end** on a generated replay.
 
 ## Layout
 
 ```
-main.py                 entry point (python main.py ...)
-calibrate.py            checkerboard calibration -> calib.yaml
-config.yaml             all settings
+start.bat / start.sh    one-click start (first run installs everything)
+launch.py               dependency setup + start
+config.yaml             all settings (the dashboard writes overrides to settings.yaml)
+main.py                 command-line entry point
+calibrate.py            command-line calibration
 field_mapper/
-  app.py                CLI + main loop
-  capture.py            threaded live camera (always newest frame), video replay
-  calibration.py        calib.yaml load/save, resolution scaling
-  config.py             typed config with defaults
-  field.py              field layout -> tag corner positions
-  localizer.py          AprilTag detection, PnP, pose filter, scheduler
+  app.py                CLI: dashboard or headless
+  service.py            runs the pipeline thread; state + commands for the dashboard
+  web/server.py         FastAPI: dashboard, camera stream, JSON API
+  web/static/           the dashboard page (HTML/CSS/JS, no build step)
+  pipeline.py           one frame: localise -> detect -> project -> track -> publish
+  localizer.py          AprilTag detection, PnP, pose filter
+  geometry.py           pose maths, undistortion, ray/floor intersection
   detector.py           Ultralytics YOLO wrapper
-  geometry.py           pose maths, undistort, ray/floor intersection
   tracker.py            nearest-neighbour tracker
   publisher.py          NetworkTables output
-  debug_view.py         camera overlay + top-down field view
+  calib_core.py         checkerboard calibration (dashboard + calibrate.py)
+  capture.py            camera, replay, recording, camera search
+  overlay.py            camera-image overlay
+  config.py / calibration.py / field.py
 tests/
 ```

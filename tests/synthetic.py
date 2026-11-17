@@ -72,3 +72,51 @@ def render_tags(
     img += rng.normal(0, noise, img.shape)
     gray = np.clip(img, 0, 255).astype(np.uint8)
     return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR), rendered
+
+
+def render_checkerboard_views(
+    camera_matrix: np.ndarray,
+    dist_coeffs: np.ndarray,
+    size: tuple[int, int],
+    pattern: tuple[int, int] = (9, 6),
+    square_m: float = 0.025,
+    n_views: int = 16,
+    seed: int = 1,
+) -> list[np.ndarray]:
+    """Grey images of a flat checkerboard in random poses, rendered *with* lens distortion
+    (each output pixel is undistorted, cast onto the board plane and sampled)."""
+    w, h = size
+    cols, rows = pattern
+    s, m = 40, 40  # board texture: px per square, margin
+    board = np.full(((rows + 1) * s + 2 * m, (cols + 1) * s + 2 * m), 255, np.uint8)
+    for r in range(rows + 1):
+        for c in range(cols + 1):
+            if (r + c) % 2 == 0:
+                board[m + r * s: m + (r + 1) * s, m + c * s: m + (c + 1) * s] = 0
+    uu, vv = np.meshgrid(np.arange(w, dtype=np.float64), np.arange(h, dtype=np.float64))
+    pix = np.stack([uu.ravel(), vv.ravel()], 1).reshape(-1, 1, 2)
+    crit = (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 30, 1e-10)
+    try:
+        norm = cv2.undistortPoints(pix, camera_matrix, dist_coeffs, None, None, None, crit)
+    except (cv2.error, TypeError):
+        norm = cv2.undistortPointsIter(pix, camera_matrix, dist_coeffs, None, None, crit)
+    rays = np.column_stack([norm.reshape(-1, 2), np.ones(w * h)])
+    rng = np.random.default_rng(seed)
+    centre_local = np.array([(cols - 1) * square_m / 2, (rows - 1) * square_m / 2, 0.0])
+    views = []
+    while len(views) < n_views:
+        rot, _ = cv2.Rodrigues(rng.normal(0, 0.35, 3))
+        z = rng.uniform(0.35, 0.7)
+        centre = np.array([rng.uniform(-0.25, 0.25) * z, rng.uniform(-0.15, 0.15) * z, z])
+        t = centre - rot @ centre_local
+        normal = rot[:, 2]
+        denom = rays @ normal
+        with np.errstate(divide="ignore", invalid="ignore"):
+            scale = (normal @ t) / denom
+        local = (rays * scale[:, None] - t) @ rot  # board-plane coordinates, origin at first inner corner
+        mapx = ((local[:, 0] + square_m) / square_m * s + m).reshape(h, w).astype(np.float32)
+        mapy = ((local[:, 1] + square_m) / square_m * s + m).reshape(h, w).astype(np.float32)
+        img = cv2.remap(board, mapx, mapy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=128)
+        img[~(scale.reshape(h, w) > 0)] = 128
+        views.append(np.clip(img + rng.normal(0, 2, img.shape), 0, 255).astype(np.uint8))
+    return views

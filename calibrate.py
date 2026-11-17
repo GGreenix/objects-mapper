@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Checkerboard camera calibration -> calib.yaml.
+"""Checkerboard camera calibration -> calib.yaml (command-line version).
+
+The easiest way to calibrate is the Calibrate tab in the web app (start.bat /
+start.sh). This script does the same from a terminal.
 
 Live (uses camera.index / width / height from config.yaml):
 
@@ -31,68 +34,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from field_mapper.calib_core import calibrate, find_corners, is_new_view, quick_corners
 from field_mapper.calibration import CameraIntrinsics, save_intrinsics
 from field_mapper.capture import open_camera
 from field_mapper.config import Config, load_config
-
-SUBPIX_CRITERIA = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 50, 1e-4)
-
-
-def find_corners(gray: np.ndarray, pattern: tuple[int, int]) -> np.ndarray | None:
-    """Accurate full-resolution corner detection. Returns (N, 2) or None."""
-    if hasattr(cv2, "findChessboardCornersSB"):
-        ok, corners = cv2.findChessboardCornersSB(gray, pattern, cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY)
-        if ok:
-            return corners.reshape(-1, 2).astype(np.float32)
-    flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
-    ok, corners = cv2.findChessboardCorners(gray, pattern, flags)
-    if not ok:
-        return None
-    corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), SUBPIX_CRITERIA)
-    return corners.reshape(-1, 2).astype(np.float32)
-
-
-def quick_corners(gray: np.ndarray, pattern: tuple[int, int], max_width: int = 640) -> np.ndarray | None:
-    """Fast, approximate detection on a downscaled image (for the live preview)."""
-    scale = min(1.0, max_width / gray.shape[1])
-    small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else gray
-    flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE | cv2.CALIB_CB_FAST_CHECK
-    ok, corners = cv2.findChessboardCorners(small, pattern, flags)
-    return corners.reshape(-1, 2) / scale if ok else None
-
-
-def board_points(pattern: tuple[int, int], square: float) -> np.ndarray:
-    cols, rows = pattern
-    obj = np.zeros((cols * rows, 3), np.float32)
-    obj[:, :2] = np.mgrid[0:cols, 0:rows].T.reshape(-1, 2) * square
-    return obj
-
-
-def calibrate(
-    views: list[np.ndarray], pattern: tuple[int, int], square: float, size: tuple[int, int], rational: bool = False
-) -> tuple[CameraIntrinsics, list[float], int]:
-    """Runs cv2.calibrateCamera; drops clearly bad views (> 3x median error) once and re-solves."""
-    obj = board_points(pattern, square)
-    flags = cv2.CALIB_RATIONAL_MODEL if rational else 0
-
-    def solve(vs):
-        rms, k, d, rvecs, tvecs = cv2.calibrateCamera([obj] * len(vs), [v.reshape(-1, 1, 2) for v in vs], size, None, None, flags=flags)
-        errs = []
-        for v, r, t in zip(vs, rvecs, tvecs):
-            proj, _ = cv2.projectPoints(obj, r, t, k, d)
-            errs.append(float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - v) ** 2, axis=1)))))
-        return rms, k, d, errs
-
-    rms, k, d, errs = solve(views)
-    med = float(np.median(errs))
-    keep = [v for v, e in zip(views, errs) if e <= max(3 * med, 0.5)]
-    dropped = len(views) - len(keep)
-    if dropped and len(keep) >= 5:
-        print(f"dropping {dropped} view(s) with error > {max(3 * med, 0.5):.2f}px and re-solving")
-        rms, k, d, errs = solve(keep)
-    else:
-        dropped = 0
-    return CameraIntrinsics(k, d.reshape(-1), size[0], size[1], float(rms)), errs, dropped
 
 
 def report_and_save(intr: CameraIntrinsics, errs, n_views: int, dropped: int, out: Path, pattern, square) -> None:
@@ -151,13 +96,6 @@ def collect_offline(args, pattern) -> tuple[list[np.ndarray], tuple[int, int] | 
         if c is not None:
             views.append(c)
     return views, size
-
-
-def is_new_view(c: np.ndarray, views: list[np.ndarray], diag: float, min_diff: float = 0.05) -> bool:
-    if not views:
-        return True
-    diffs = [float(np.mean(np.linalg.norm(c - v, axis=1))) / diag for v in views]
-    return min(diffs) > min_diff
 
 
 def collect_live(cfg: Config, args, pattern) -> tuple[list[np.ndarray], tuple[int, int] | None]:

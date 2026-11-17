@@ -32,15 +32,20 @@ class Frame:
     capture_monotonic: float  # time.monotonic() when the frame was obtained (for latency)
 
 
-def open_camera(cfg: CameraConfig) -> cv2.VideoCapture:
-    backend = cfg.backend.lower()
+def _backend(name: str) -> tuple[str, int]:
+    backend = name.lower()
     if backend == "auto":
         backend = "dshow" if sys.platform.startswith("win") else ("v4l2" if sys.platform.startswith("linux") else "any")
     if backend not in _BACKENDS:
         raise ValueError(f"camera.backend must be one of auto, {', '.join(_BACKENDS)}")
-    cap = cv2.VideoCapture(int(cfg.index), _BACKENDS[backend])
+    return backend, _BACKENDS[backend]
+
+
+def open_camera(cfg: CameraConfig) -> cv2.VideoCapture:
+    backend, api = _backend(cfg.backend)
+    cap = cv2.VideoCapture(int(cfg.index), api)
     if not cap.isOpened():
-        raise RuntimeError(f"could not open camera index {cfg.index} with backend {backend}")
+        raise RuntimeError(f"no camera at index {cfg.index} (backend {backend})")
     if cfg.fourcc:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*cfg.fourcc[:4]))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.width)
@@ -75,14 +80,20 @@ class CameraSource:
         self._last_read_index = -1
         self._running = True
         self._failures = 0
+        self.fps = 0.0
         self._thread = threading.Thread(target=self._run, name="camera", daemon=True)
         self._thread.start()
 
     def _run(self) -> None:
         index = 0
+        last = None
         while self._running:
             ok, img = self.cap.read()
             t = time.monotonic()
+            if ok and img is not None and last is not None and t > last:
+                self.fps = 0.9 * self.fps + 0.1 * (1.0 / (t - last)) if self.fps else 1.0 / (t - last)
+            if ok and img is not None:
+                last = t
             if not ok or img is None:
                 self._failures += 1
                 if self._failures in (1, 30) or self._failures % 300 == 0:
@@ -167,5 +178,72 @@ class VideoSource:
         """Call after a pause so pacing doesn't try to catch up."""
         self._t0 = None
 
+    def restart(self) -> None:
+        """Rewind to the start. Timestamps keep increasing, as when looping."""
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        self._loop_offset = self._index / self.fps
+        self._t0 = None
+
     def close(self) -> None:
         self.cap.release()
+
+
+def probe_cameras(backend: str = "auto", max_index: int = 6, skip: set[int] | None = None, thumb_width: int = 320) -> list[dict]:
+    """Try camera indices 0..max_index-1. Returns [{index, width, height, jpeg}] for those that deliver a frame."""
+    _, api = _backend(backend)
+    found = []
+    quiet = getattr(getattr(cv2, "utils", None), "logging", None)  # missing cameras make OpenCV very chatty
+    old_level = quiet.getLogLevel() if quiet else None
+    if quiet:
+        quiet.setLogLevel(quiet.LOG_LEVEL_ERROR)
+    try:
+        for i in range(max_index):
+            if skip and i in skip:
+                continue
+            _probe_one(i, api, thumb_width, found)
+    finally:
+        if quiet:
+            quiet.setLogLevel(old_level)
+    return found
+
+
+def _probe_one(i: int, api: int, thumb_width: int, found: list[dict]) -> None:
+    cap = cv2.VideoCapture(i, api)
+    try:
+        if not cap.isOpened():
+            return
+        img = None
+        for _ in range(5):  # first frames are often black while exposure settles
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                img = frame
+        if img is None:
+            return
+        h, w = img.shape[:2]
+        thumb = cv2.resize(img, (thumb_width, int(h * thumb_width / w)), interpolation=cv2.INTER_AREA)
+        ok, jpg = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        found.append({"index": i, "width": w, "height": h, "jpeg": jpg.tobytes() if ok else None})
+    finally:
+        cap.release()
+
+
+class Recorder:
+    """Writes raw frames to an MJPG .avi (cheap to encode, replays with --replay or the Source setting)."""
+
+    def __init__(self, path: Path, fps: float, size: tuple[int, int]) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.writer = cv2.VideoWriter(str(self.path), cv2.VideoWriter_fourcc(*"MJPG"), max(1.0, float(fps)), size)
+        if not self.writer.isOpened():
+            raise RuntimeError(f"could not open {self.path} for writing")
+        self.size = size
+        self.frames = 0
+        self.started = time.monotonic()
+
+    def write(self, img: np.ndarray) -> None:
+        if (img.shape[1], img.shape[0]) == self.size:
+            self.writer.write(img)
+            self.frames += 1
+
+    def close(self) -> None:
+        self.writer.release()

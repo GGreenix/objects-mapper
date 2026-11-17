@@ -104,10 +104,21 @@ class NetworkTablesConfig:
 
 
 @dataclass
-class DebugConfig:
-    show_window: bool = True
-    camera_window_scale: float = 1.0
-    field_px_per_m: float = 60.0
+class SourceConfig:
+    type: str = "camera"  # camera | video
+    video_path: str = ""  # used when type is "video" (e.g. a file in recordings/)
+    loop: bool = True
+    speed: float = 1.0  # replay speed, 0 = as fast as possible
+
+
+@dataclass
+class WebConfig:
+    host: str = "127.0.0.1"  # "0.0.0.0" lets other devices on the network open the page
+    port: int = 5805
+    open_browser: bool = True
+    stream_fps: float = 15.0
+    stream_width: int = 960  # camera stream is downscaled to this width for the browser
+    jpeg_quality: int = 75
 
 
 @dataclass
@@ -129,8 +140,9 @@ class Config:
     projection: ProjectionConfig = dc_field(default_factory=ProjectionConfig)
     tracker: TrackerConfig = dc_field(default_factory=TrackerConfig)
     networktables: NetworkTablesConfig = dc_field(default_factory=NetworkTablesConfig)
-    debug: DebugConfig = dc_field(default_factory=DebugConfig)
     calibration: CalibrationConfig = dc_field(default_factory=CalibrationConfig)
+    source: SourceConfig = dc_field(default_factory=SourceConfig)
+    web: WebConfig = dc_field(default_factory=WebConfig)
 
     base_dir: Path = dc_field(default_factory=Path.cwd, repr=False)
 
@@ -138,6 +150,26 @@ class Config:
         """Relative paths in the config are relative to the config file."""
         path = Path(p).expanduser()
         return path if path.is_absolute() else (self.base_dir / path)
+
+
+def _coerce(value: Any, default: Any, where: str) -> Any:
+    """Convert strings/numbers from YAML or the web UI to the type of the default."""
+    if default is None or value is None:
+        return value
+    try:
+        if isinstance(default, bool):
+            if isinstance(value, str):
+                return value.strip().lower() in ("1", "true", "yes", "on")
+            return bool(value)
+        if isinstance(default, int):
+            return int(float(value))
+        if isinstance(default, float):
+            return float(value)
+        if isinstance(default, str):
+            return str(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"config '{where}': cannot use {value!r} (expected {type(default).__name__})") from None
+    return value
 
 
 def _build(cls, data: dict[str, Any], where: str):
@@ -148,21 +180,75 @@ def _build(cls, data: dict[str, Any], where: str):
     known = {f.name: f for f in dataclasses.fields(cls) if f.name != "base_dir"}
     unknown = set(data) - set(known)
     if unknown:
-        raise ValueError(f"unknown config key(s) in '{where}': {', '.join(sorted(unknown))}")
+        raise ValueError(f"unknown config key(s) in '{where or 'top level'}': {', '.join(sorted(unknown))}")
     kwargs = {}
     for name, value in data.items():
-        default = known[name].default_factory() if known[name].default_factory is not dataclasses.MISSING else None
+        f = known[name]
+        default = f.default_factory() if f.default_factory is not dataclasses.MISSING else f.default
+        key = f"{where}.{name}" if where else name
         if dataclasses.is_dataclass(default):
-            kwargs[name] = _build(type(default), value, f"{where}.{name}" if where else name)
+            kwargs[name] = _build(type(default), value, key)
         else:
-            kwargs[name] = value
+            kwargs[name] = _coerce(value, default, key)
     return cls(**kwargs)
 
 
-def load_config(path: str | Path) -> Config:
-    path = Path(path)
+def deep_merge(base: dict, override: dict) -> dict:
+    out = dict(base)
+    for k, v in (override or {}).items():
+        out[k] = deep_merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def _read_yaml(path: Path) -> dict:
+    if not path.exists():
+        return {}
     with path.open("r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a mapping")
+    return data
+
+
+def overrides_path_for(config_path: str | Path) -> Path:
+    """Settings saved from the web UI live next to config.yaml in settings.yaml."""
+    return Path(config_path).resolve().parent / "settings.yaml"
+
+
+def load_config(path: str | Path, overrides: str | Path | None | bool = True) -> Config:
+    """Load config.yaml, then apply settings.yaml (written by the web UI) on top.
+
+    ``overrides``: True = the default settings.yaml next to the config,
+    a path = that file, False/None = ignore overrides.
+    """
+    path = Path(path)
+    data = _read_yaml(path) if path.exists() else {}
+    if overrides is True:
+        overrides = overrides_path_for(path)
+    if overrides:
+        data = deep_merge(data, _read_yaml(Path(overrides)))
     cfg = _build(Config, data, "")
     cfg.base_dir = path.resolve().parent
     return cfg
+
+
+def validate_override(config_path: str | Path, new_values: dict) -> dict:
+    """Merge ``new_values`` into the saved overrides and check the result builds. Returns merged overrides."""
+    ov_path = overrides_path_for(config_path)
+    merged = deep_merge(_read_yaml(ov_path), new_values)
+    _build(Config, deep_merge(_read_yaml(Path(config_path)), merged), "")  # raises ValueError if invalid
+    return merged
+
+
+def save_overrides(config_path: str | Path, overrides: dict) -> Path:
+    ov_path = overrides_path_for(config_path)
+    with ov_path.open("w", encoding="utf-8") as fh:
+        fh.write("# Written by the FieldMapper web app. Values here override config.yaml.\n")
+        yaml.safe_dump(overrides, fh, sort_keys=True)
+    return ov_path
+
+
+def to_dict(cfg: Config) -> dict:
+    d = dataclasses.asdict(cfg)
+    d.pop("base_dir", None)
+    return d

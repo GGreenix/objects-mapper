@@ -11,3 +11,4 @@ runs/
 *.avi
 models/*.pt
 !models/.gitkeep
+settings.yaml

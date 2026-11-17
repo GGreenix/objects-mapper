@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Field Mapper</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='7' width='28' height='18' rx='3' fill='%2322c55e'/%3E%3Ccircle cx='12' cy='16' r='3' fill='%23fff'/%3E%3Ccircle cx='21' cy='13' r='2' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect x="2" y="7" width="28" height="18" rx="3"/><circle cx="12" cy="16" r="3"/><circle cx="21" cy="13" r="2"/></svg>
+    <span>Field Mapper</span>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="live" class="active">Live</button>
+    <button role="tab" data-tab="calibrate">Calibrate</button>
+    <button role="tab" data-tab="settings">Settings</button>
+  </nav>
+  <div class="chips" id="chips"></div>
+</header>
+
+<div id="offline" class="offline hidden">Lost connection to Field Mapper. Is the app still running? Retrying...</div>
+
+<section id="setup" class="setup hidden" aria-live="polite">
+  <div class="setup-head"><h2>Finish setup</h2><span class="muted">Everything below can be done from this page.</span></div>
+  <ol id="setup-steps" class="steps"></ol>
+</section>
+
+<main>
+  <!-- ============================== LIVE ============================== -->
+  <section class="tab" id="tab-live">
+    <div class="grid-top">
+      <div class="card media">
+        <div class="card-head">
+          <h3>Camera</h3>
+          <div class="toggles">
+            <label class="check"><input type="checkbox" id="ov-field" checked> Field overlay</label>
+            <label class="check"><input type="checkbox" id="ov-det" checked> Detections</label>
+            <a href="/snapshot.jpg" target="_blank" class="btn small ghost">Snapshot</a>
+          </div>
+        </div>
+        <div class="stream-wrap"><img id="stream" alt="Camera view with overlays"></div>
+        <div id="replay-bar" class="replay hidden">
+          <button class="btn small" id="replay-toggle">Pause</button>
+          <button class="btn small ghost" id="replay-restart">Restart</button>
+          <div class="progress"><div id="replay-progress"></div></div>
+          <span id="replay-label" class="mono muted"></span>
+        </div>
+      </div>
+      <div class="card media">
+        <div class="card-head">
+          <h3>Field</h3>
+          <div class="toggles">
+            <span id="cursor" class="mono muted"></span>
+            <button class="btn small ghost" id="flip" title="Rotate the field view 180°">View from red</button>
+          </div>
+        </div>
+        <div class="field-wrap"><canvas id="field" aria-label="Top-down field map"></canvas></div>
+        <div class="legend">
+          <span><i class="dot piece"></i>Game piece</span>
+          <span><i class="dot piece hollow"></i>Not seen this frame</span>
+          <span><i class="dot raw"></i>Raw detection</span>
+          <span><i class="dot tag"></i>Tag used for pose</span>
+          <span><i class="swatch fov"></i>Camera view</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-bottom">
+      <div class="card">
+        <div class="card-head"><h3>Game pieces</h3><span id="piece-count" class="pill">0</span></div>
+        <div class="table-wrap">
+          <table class="pieces">
+            <thead><tr><th>#</th><th>Class</th><th class="num">X (m)</th><th class="num">Y (m)</th><th class="num">Conf</th></tr></thead>
+            <tbody id="pieces"></tbody>
+          </table>
+          <p id="pieces-empty" class="empty">No pieces on the field right now.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Camera pose</h3><span id="pose-pill" class="pill">-</span></div>
+        <dl class="kv" id="pose"></dl>
+        <button class="btn" id="btn-relocalize">Re-localise now</button>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Controls</h3></div>
+        <label class="field-label" for="conf">Detection confidence <span id="conf-val" class="mono"></span></label>
+        <input type="range" id="conf" min="0.05" max="0.95" step="0.05">
+        <div class="btn-row">
+          <button class="btn" id="btn-reset">Reset tracker</button>
+          <button class="btn" id="btn-record">● Record</button>
+        </div>
+        <dl class="kv compact" id="perf"></dl>
+      </div>
+
+      <div class="card log-card">
+        <div class="card-head"><h3>Log</h3><button class="btn small ghost" id="log-clear">Clear</button></div>
+        <div id="log" class="log" role="log"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================== CALIBRATE =========================== -->
+  <section class="tab hidden" id="tab-calibrate">
+    <div class="grid-cal">
+      <div class="card media">
+        <div class="card-head"><h3>Camera</h3><span id="cal-board" class="pill">-</span></div>
+        <div class="stream-wrap"><img id="cal-stream" alt="Camera view with checkerboard detection"></div>
+      </div>
+      <div class="card cal-panel">
+        <h3>Calibrate the camera</h3>
+        <p class="muted">Calibration measures the lens so pixels can be turned into field positions. Do it once per camera, at the resolution you run at, with autofocus off.</p>
+
+        <div id="cal-idle">
+          <ol class="howto">
+            <li>Print a checkerboard: <a id="print-board" href="/board" target="_blank">open printable board</a>. Glue it to something flat.</li>
+            <li>Measure one square and check the numbers below.</li>
+            <li>Press <b>Start</b>, then capture 15+ views covering the whole image.</li>
+          </ol>
+          <div class="form-grid">
+            <label>Inner corners across<input type="number" id="cal-cols" min="3" max="30"></label>
+            <label>Inner corners down<input type="number" id="cal-rows" min="3" max="30"></label>
+            <label>Square size (mm)<input type="number" id="cal-square" min="5" max="200" step="0.1"></label>
+            <label>Views needed<input type="number" id="cal-min" min="5" max="60"></label>
+          </div>
+          <p class="hint">A board with 10 × 7 squares has 9 × 6 inner corners.</p>
+          <button class="btn primary" id="cal-start">Start</button>
+          <p class="hint">Mapping pauses while calibrating.</p>
+        </div>
+
+        <div id="cal-active" class="hidden">
+          <div class="cal-progress">
+            <div class="progress big"><div id="cal-bar"></div></div>
+            <span id="cal-count" class="mono"></span>
+          </div>
+          <p id="cal-msg" class="cal-msg"></p>
+          <div class="btn-row">
+            <button class="btn primary" id="cal-capture">Capture <kbd>Space</kbd></button>
+            <button class="btn" id="cal-auto">Auto-capture: off</button>
+          </div>
+          <div class="btn-row">
+            <button class="btn ghost" id="cal-undo">Undo</button>
+            <button class="btn ghost" id="cal-clear">Clear</button>
+          </div>
+          <ul class="tips">
+            <li>Cover the <b>corners and edges</b> of the image, not just the middle.</li>
+            <li>Tilt the board different ways and vary the distance.</li>
+            <li>Hold still for each capture; avoid glare on the board.</li>
+          </ul>
+          <button class="btn primary wide" id="cal-solve" disabled>Calibrate &amp; save</button>
+          <div id="cal-result" class="result hidden"></div>
+          <button class="btn wide" id="cal-done">Done</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ SETTINGS ============================ -->
+  <section class="tab hidden" id="tab-settings">
+    <form id="settings-form" class="settings" autocomplete="off">
+      <div class="card">
+        <h3>Robot connection</h3>
+        <div class="form-grid">
+          <label>Team number<input type="number" data-key="team_number" data-type="int" min="0" max="25599" id="set-team"></label>
+          <label><span>NetworkTables server <span class="opt">(optional)</span></span>
+            <input type="text" data-key="networktables.server" data-type="str" placeholder="automatic (team number / Driver Station)">
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" data-key="networktables.enabled" data-type="bool"> Publish to the robot over NetworkTables</label>
+        <p class="hint">Leave the server empty at competition. Use <code>127.0.0.1</code> for robot simulation on this laptop.</p>
+      </div>
+
+      <div class="card" id="set-camera-card">
+        <h3>Video source</h3>
+        <div class="segmented" role="radiogroup">
+          <label><input type="radio" name="source" value="camera" data-key="source.type" data-type="radio"> Camera</label>
+          <label><input type="radio" name="source" value="video" data-key="source.type" data-type="radio"> Recording</label>
+        </div>
+        <div id="src-camera">
+          <div class="form-grid">
+            <label>Camera number<input type="number" data-key="camera.index" data-type="int" min="0" max="20" id="set-cam-index"></label>
+            <label>Resolution<select data-key="camera.resolution" data-type="resolution" id="set-res"></select></label>
+            <label>Frame rate<input type="number" data-key="camera.fps" data-type="float" min="1" max="120"></label>
+          </div>
+          <button type="button" class="btn" id="find-cameras">Find cameras</button>
+          <div id="camera-list" class="camera-list"></div>
+        </div>
+        <div id="src-video" class="hidden">
+          <div class="form-grid">
+            <label class="span2">Recording<select data-key="source.video_path" data-type="str" id="set-video"></select></label>
+            <label>Speed<input type="number" data-key="source.speed" data-type="float" min="0" max="8" step="0.25"></label>
+          </div>
+          <label class="check"><input type="checkbox" data-key="source.loop" data-type="bool"> Loop</label>
+          <p class="hint">Record matches with the <b>● Record</b> button on the Live tab; they appear here.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Field</h3>
+        <div class="form-grid">
+          <label class="span2">AprilTag layout<select data-key="field.layout" data-type="str" id="set-layout"></select></label>
+          <label>Coordinate origin
+            <select data-key="field.origin" data-type="str"><option value="blue">Blue alliance (default)</option><option value="red">Red alliance</option></select>
+          </label>
+        </div>
+        <p class="hint">2026 events use either the <i>Welded</i> or the <i>AndyMark</i> field. Check which yours is.</p>
+      </div>
+
+      <div class="card">
+        <h3>Game piece detection</h3>
+        <div class="form-grid">
+          <label class="span2">YOLO model<select data-key="detector.model_path" data-type="str" id="set-model"></select></label>
+          <label>Upload model<input type="file" id="model-upload" accept=".pt,.onnx,.engine,.torchscript"></label>
+          <label>Confidence<input type="number" data-key="detector.confidence" data-type="float" min="0.01" max="0.99" step="0.05"></label>
+          <label>Run on<select data-key="detector.device" data-type="str"><option value="cuda:0">GPU (CUDA)</option><option value="cpu">CPU</option></select></label>
+          <label><span>Classes to keep <span class="opt">(optional)</span></span><input type="text" data-key="detector.classes" data-type="list" placeholder="all classes"></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Localisation &amp; projection</h3>
+        <div class="form-grid">
+          <label>Re-check camera pose every (s)<input type="number" data-key="localization.interval_s" data-type="float" min="0.5" step="0.5"></label>
+          <label>Tags needed per solve<input type="number" data-key="localization.min_tags" data-type="int" min="1" max="10"></label>
+          <label>Ground offset (m)<input type="number" data-key="projection.ground_offset_m" data-type="float" step="0.005"></label>
+        </div>
+        <p class="hint">Ground offset ≈ the piece's radius moves each point from the piece's near edge to its centre.</p>
+      </div>
+
+      <div class="card">
+        <h3>Dashboard</h3>
+        <label class="check"><input type="checkbox" data-key="web.host" data-type="host"> Let other devices on the network open this page</label>
+        <p class="hint">Takes effect the next time the app starts.</p>
+      </div>
+
+      <div class="save-bar">
+        <span id="settings-note" class="muted"></span>
+        <button type="button" class="btn ghost" id="settings-reset">Discard changes</button>
+        <button type="submit" class="btn primary" id="settings-save">Save &amp; apply</button>
+      </div>
+    </form>
+  </section>
+</main>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

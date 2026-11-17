@@ -1,5 +1,8 @@
 # FieldMapper configuration. Every key is optional (defaults in field_mapper/config.py).
 # Relative paths are relative to this file.
+#
+# You normally don't need to edit this file: the common settings are in the web
+# app's Settings tab, which saves them to settings.yaml (that file overrides this one).
 
 team_number: 0            # <-- set your team number
 
@@ -77,12 +80,21 @@ networktables:
   server: ""                  # "" = find the robot from team_number / Driver Station; or e.g. "127.0.0.1" for sim
   client_name: FieldMapper
 
-debug:
-  show_window: true
-  camera_window_scale: 1.0
-  field_px_per_m: 60
+source:
+  type: camera                # camera | video (replay a recording)
+  video_path: ""              # e.g. recordings/qual12.avi
+  loop: true
+  speed: 1.0                  # replay speed (0 = as fast as possible)
 
-calibration:                  # used by calibrate.py
+web:
+  host: 127.0.0.1             # 0.0.0.0 = let other devices on the network open the page
+  port: 5805
+  open_browser: true
+  stream_fps: 15              # camera stream to the browser (does not limit processing)
+  stream_width: 960
+  jpeg_quality: 75
+
+calibration:                  # checkerboard for the Calibrate tab (and calibrate.py)
   board_cols: 9               # INNER corners
   board_rows: 6
   square_size_m: 0.025

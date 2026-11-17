@@ -63,6 +63,13 @@ class YoloDetector:
         self.detect(np.zeros((cfg.imgsz, cfg.imgsz, 3), dtype=np.uint8))
         log.info("YOLO model %s loaded (%d classes, device=%s, half=%s)", model_path, len(self.names), device, self.half)
 
+    def set_thresholds(self, confidence: float, iou: float | None = None) -> None:
+        self.cfg.confidence = float(confidence)
+        self._predict_kwargs["conf"] = float(confidence)
+        if iou is not None:
+            self.cfg.iou = float(iou)
+            self._predict_kwargs["iou"] = float(iou)
+
     def _resolve_classes(self, classes: list) -> list[int] | None:
         if not classes:
             return None
@@ -88,7 +95,7 @@ class YoloDetector:
         xyxy = boxes.xyxy.cpu().numpy()
         conf = boxes.conf.cpu().numpy()
         cls = boxes.cls.cpu().numpy().astype(int)
-        for (x1, y1, x2, y2), c, k in zip(xyxy, conf, cls):
+        for (x1, y1, x2, y2), c, k in zip(xyxy, conf, cls, strict=True):
             if c < self.cfg.confidence:
                 continue
             out.append(Detection(float(x1), float(y1), float(x2), float(y2), float(c), int(k), self.names.get(int(k), str(k))))

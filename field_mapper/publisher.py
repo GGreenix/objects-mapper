@@ -23,16 +23,8 @@ class NTPublisher:
         self._ntcore = ntcore
         self.inst = ntcore.NetworkTableInstance.getDefault()
         self.inst.startClient4(client_name)
-        if server:
-            self.inst.setServer(server)
-            log.info("NetworkTables: connecting to %s", server)
-        else:
-            if team <= 0:
-                log.warning("team_number is not set; NetworkTables will only find the robot via the Driver Station")
-            else:
-                self.inst.setServerTeam(team)
-            self.inst.startDSClient()
-            log.info("NetworkTables: team %d (+ Driver Station)", team)
+        self.team, self.server = 0, ""
+        self.configure(team, server)
 
         t = self.inst.getTable(table)
         opts = ntcore.PubSubOptions(periodic=0.01, sendAll=True, keepDuplicates=True)
@@ -43,6 +35,21 @@ class NTPublisher:
         self._valid = t.getBooleanTopic("poseValid").publish(opts)
         self._valid.set(False)
         self._was_connected = False
+
+    def configure(self, team: int, server: str = "") -> None:
+        """Point the client at an explicit server, or at the robot for ``team`` (+ Driver Station)."""
+        self.team, self.server = int(team), str(server or "")
+        if self.server:
+            self.inst.stopDSClient()
+            self.inst.setServer(self.server)
+            log.info("NetworkTables: connecting to %s", self.server)
+        else:
+            if self.team > 0:
+                self.inst.setServerTeam(self.team)
+            else:
+                log.warning("team number not set; NetworkTables can only find the robot via the Driver Station")
+            self.inst.startDSClient()
+            log.info("NetworkTables: team %d (+ Driver Station)", self.team)
 
     @property
     def connected(self) -> bool:
@@ -81,6 +88,11 @@ class NTPublisher:
 
 class NullPublisher:
     connected = False
+    team = 0
+    server = ""
+
+    def configure(self, team: int, server: str = "") -> None:
+        self.team, self.server = int(team), str(server or "")
 
     def publish(self, xs, ys, capture_monotonic, camera_pose, pose_valid) -> float:
         return capture_monotonic
