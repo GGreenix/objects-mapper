@@ -1,0 +1,9 @@
+[project]
+name = "field-mapper"
+version = "0.1.0"
+description = "FRC driver-station camera that maps game pieces on the field and publishes them over NetworkTables"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
