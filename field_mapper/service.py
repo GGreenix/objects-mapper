@@ -296,7 +296,14 @@ class MapperService:
     def _start_detector_load(self) -> None:
         d = self.cfg.detector
         path = self.cfg.resolve_path(d.model_path)
-        key = (str(path), str(d.device), bool(d.half), int(d.imgsz), tuple(str(c) for c in d.classes))
+        # The file's size/mtime are part of the key: uploading a model over the same path
+        # (e.g. best.pt onto the default models/best.pt) must load it again.
+        try:
+            st = path.stat()
+            file_sig = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            file_sig = None
+        key = (str(path), file_sig, str(d.device), bool(d.half), int(d.imgsz), tuple(str(c) for c in d.classes))
         if key == self._detector_key:
             if self.detector is not None:
                 self.detector.set_thresholds(d.confidence, d.iou)

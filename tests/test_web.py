@@ -126,3 +126,30 @@ def test_web_app_end_to_end(project):
 
         assert client.get("/board.png?cols=9&rows=6&square_mm=25").status_code == 200
         assert client.get("/board.png?cols=99").status_code == 400
+
+
+def test_uploading_over_the_default_model_path_loads_it(project, monkeypatch):
+    """Regression: the default path is models/best.pt; uploading best.pt must load it, not be skipped."""
+    import field_mapper.detector as det_mod
+
+    class FakeDetector:
+        def __init__(self, cfg, path):
+            self.cfg, self.device, self.half, self.names = cfg, "cpu", False, {0: "fuel"}
+
+        def set_thresholds(self, confidence, iou=None):
+            pass
+
+        def detect(self, img):
+            return []
+
+    monkeypatch.setattr(det_mod, "YoloDetector", FakeDetector)
+    (project / "settings.yaml").unlink(missing_ok=True)
+    svc = MapperService(project / "config.yaml", nt_enabled=False)
+    svc.cfg.detector.model_path = "models/best.pt"
+    with TestClient(create_app(svc)) as client:
+        svc.apply_settings({"detector": {"model_path": "models/best.pt"}})
+        wait_for(client, lambda s: (s["model"]["error"] or "").startswith("no model file"))
+        r = client.put("/api/models/best.pt", content=b"weights").json()
+        assert client.post("/api/settings", json={"detector": {"model_path": r["path"]}}).json()["ok"]
+        st = wait_for(client, lambda s: s["model"]["ok"])
+        assert st["model"]["error"] is None
