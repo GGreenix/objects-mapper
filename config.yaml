@@ -1,0 +1,101 @@
+# FieldMapper configuration. Every key is optional (defaults in field_mapper/config.py).
+# Relative paths are relative to this file.
+#
+# You normally don't need to edit this file: the common settings are in the web
+# app's Settings tab, which saves them to settings.yaml (that file overrides this one).
+
+team_number: 0            # <-- set your team number
+
+camera:
+  index: 0
+  width: 1280
+  height: 720
+  fps: 30
+  fourcc: MJPG            # most USB cams need MJPG for >= 720p30. "" = driver default
+  backend: auto           # auto (dshow on Windows, v4l2 on Linux) | any | dshow | msmf | v4l2
+  calibration_file: calib.yaml
+  # Extra cv2.CAP_PROP_* settings. Lock focus/exposure so the calibration stays valid.
+  # Values are driver-specific; check what your camera accepts.
+  properties:
+    AUTOFOCUS: 0
+    # FOCUS: 0
+    # AUTO_EXPOSURE: 1
+    # EXPOSURE: -6
+
+field:
+  # Built-in WPILib layout name, or a path to a WPILib field layout JSON.
+  # 2026 REBUILT: k2026RebuiltWelded or k2026RebuiltAndyMark (check which your event uses).
+  layout: k2026RebuiltWelded
+  origin: blue            # coordinate origin: blue (WPILib default) | red
+  tag_family: tag36h11
+  tag_size_m: 0.1651      # black-square edge (6.5 in)
+  bounds_margin_m: 0.0    # keep detections this far outside the field perimeter (negative = shrink)
+  ignore_tag_ids: []      # tags never used for localisation
+
+apriltag:
+  quad_decimate: 1.0      # 2.0 is ~4x faster but loses small/far tags
+  quad_sigma: 0.0
+  num_threads: 4
+  refine_edges: true
+  decode_sharpening: 0.25
+  min_cluster_pixels: 20  # WPILib's default (300) drops every tag smaller than ~75 px - far too big here
+  bits_corrected: 1
+  max_hamming: 0
+  min_decision_margin: 25
+
+localization:
+  interval_s: 6.0             # re-solve the camera pose this often
+  retry_interval_s: 0.5       # ...or this often while there is no pose / a move is being confirmed
+  min_tags: 2                 # tags per solve. One small, distant tag is ambiguous/noisy; see README
+  max_reprojection_error_px: 2.0
+  max_single_tag_ambiguity: 0.2
+  max_jump_m: 0.25            # a solve further than this from the held pose is an outlier...
+  max_jump_deg: 2.0           # 1 deg of yaw is ~17 cm of error 10 m away
+  jump_confirmations: 3       # ...unless this many in a row agree (camera was bumped). 0 = never
+  smoothing_alpha: 0.3        # fraction of each accepted solve blended in (1 = snap)
+  max_pose_age_s: 0           # mark the pose invalid if not re-confirmed for this long. 0 = never
+
+detector:
+  model_path: models/best.pt
+  device: cuda:0              # falls back to CPU (with a warning) if CUDA isn't available
+  half: true                  # FP16 on GPU
+  imgsz: 640
+  confidence: 0.5
+  iou: 0.5
+  classes: []                 # class names or ids to keep; empty = all
+
+projection:
+  floor_z_m: 0.0
+  ground_offset_m: 0.0        # push points away from the camera, e.g. piece radius to get its centre
+
+tracker:
+  max_match_distance_m: 0.5
+  max_missed_frames: 10       # drop a track after this many frames without a match
+  min_hits: 3                 # frames a piece must be seen before it is published
+  smoothing_alpha: 0.5
+
+networktables:
+  enabled: true
+  table: FieldMapper
+  server: ""                  # "" = find the robot from team_number / Driver Station; or e.g. "127.0.0.1" for sim
+  client_name: FieldMapper
+
+source:
+  type: camera                # camera | video (replay a recording)
+  video_path: ""              # e.g. recordings/qual12.avi
+  loop: true
+  speed: 1.0                  # replay speed (0 = as fast as possible)
+
+web:
+  host: 127.0.0.1             # 0.0.0.0 = let other devices on the network open the page
+  port: 5805
+  open_browser: true
+  stream_fps: 15              # camera stream to the browser (does not limit processing)
+  stream_width: 960
+  jpeg_quality: 75
+
+calibration:                  # checkerboard for the Calibrate tab (and calibrate.py)
+  board_cols: 9               # INNER corners
+  board_rows: 6
+  square_size_m: 0.025
+  min_frames: 15

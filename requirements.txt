@@ -1,0 +1,10 @@
+# Python 3.11+. start.bat / start.sh install all of this for you (launch.py also
+# picks the right CUDA build of PyTorch for your NVIDIA driver first).
+numpy>=1.24
+opencv-python>=4.8          # not -headless (calibrate.py's live preview uses a window)
+PyYAML>=6.0
+robotpy-apriltag>=2026.2.1  # 2026 REBUILT field layouts
+pyntcore>=2026.2.1
+ultralytics>=8.3
+fastapi>=0.110
+uvicorn>=0.29
